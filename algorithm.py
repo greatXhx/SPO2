@@ -10,14 +10,21 @@ def maxim_peaks_above_min_height(pn_locs, pn_npks, pn_x, n_size, n_min_height):
     """
     i = 1
     # pn_npks = 0
+    pn_peak = [0]*len(pn_locs)
     while i < n_size - 1:
-        if pn_x[i] > n_min_height and pn_x[i] > pn_x[i - 1]:
+        if pn_x[i] > n_min_height and pn_x[i] > pn_x[i - 1] :
             n_width = 1
             while i + n_width < n_size and pn_x[i] == pn_x[i + n_width]:
                 n_width += 1
             if pn_x[i] > pn_x[i + n_width] and pn_npks < 15:
-                pn_locs[pn_npks] = i
-                pn_npks += 1
+                if pn_npks<1 or i-25>pn_locs[pn_npks-1]:  #加上一个防找多机制 限制相邻两峰间距大于25，要求被测对象的心率小于240
+                    pn_locs[pn_npks] = i
+                    pn_peak[pn_npks] = pn_x[i]
+                    pn_npks += 1
+                elif pn_x[i] > pn_locs[pn_npks-1]:   #两个峰间距小于25，若后峰比前峰高，则更新，否则认为后峰为假峰
+                    pn_locs[pn_npks-1] = i
+                    pn_peak[pn_npks-1] = pn_x[i]
+
                 i += n_width + 1
             else:
                 i += n_width
@@ -116,7 +123,6 @@ def maxim_find_peaks(
     """
     pn_npks = maxim_peaks_above_min_height(
         pn_locs, pn_npks, pn_x, n_size, n_min_height)
-    # print(pn_npks)
     # pn_npks = maxim_remove_close_peaks(pn_locs, pn_npks, pn_x, n_min_distance )
     # print(pn_npks)
     pn_npks = min(pn_npks, n_max_num)
@@ -130,7 +136,12 @@ def maxim_find_peaks(
 def maxim_heart_rate_and_oxygen_saturation(
         pun_ir_buffer,
         n_ir_buffer_length,
-        pun_red_buffer):
+        pun_red_buffer,
+        pn_heart_rate,
+        pch_hr_valid,
+        pn_spo2,
+        pch_spo2_valid,
+        plotFlag = False):
     """
     Calculate the heart rate and SpO2 level
     By detecting  peaks of PPG cycle and corresponding AC/DC of red/infra-red signal, the ratio for the SPO2 is computed.Since this algorithm is aiming for Arm M0/M3. formaula for SPO2 did not achieve the accuracy due to register overflow.Thus, accurate SPO2 is precalculated and save longo uch_spo2_table[] per each ratio.
@@ -149,9 +160,11 @@ def maxim_heart_rate_and_oxygen_saturation(
 
     uch_spo2_table = [95, 95, 95, 96, 96, 96, 97, 97, 97, 97, 97, 98, 98, 98, 98, 98, 99, 99, 99, 99, 99, 99, 99, 99, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 99, 99, 99, 99, 99, 99, 99, 99, 98, 98, 98, 98, 98, 98, 97, 97, 97, 97, 96, 96, 96, 96, 95, 95, 95, 94, 94, 94, 93, 93, 93, 92, 92, 92, 91, 91, 90, 90, 89, 89, 89, 88, 88, 87, 87, 86, 86, 85, 85, 84, 84, 83, 82, 82, 81, 81, 80, 80, 79, 78, 78, 77, 76, 76, 75, 74, 74, 73, 72, 72, 71, 70, 69, 69, 68, 67, 66, 66, 65, 64, 63, 62, 62, 61, 60, 59, 58, 57, 56, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 31, 30, 29, 28, 27, 26, 25, 23, 22, 21, 20, 19, 17, 16, 15, 14, 12, 11, 10, 9, 7, 6, 5, 3, 2, 1]
 
-    MA4_SIZE = 4  # 均值滤波长度
+    MA4_SIZE = 8  # 均值滤波长度
+    DIFF_SIZE = 4
     HAMMING_SIZE = 5
     auw_hamm = [41, 276, 512, 276, 41]
+
 
     an_x = []
     an_dx = []
@@ -165,24 +178,39 @@ def maxim_heart_rate_and_oxygen_saturation(
         an_x.append(pun_ir_buffer[k] - un_ir_mean)
 
     # 4 pt Moving Average
-    plt.figure()
-    plt.plot(an_x)
+    if plotFlag:
+        plt.figure()
+        plt.plot(an_x)
     for k in range(n_ir_buffer_length - MA4_SIZE):
-        n_denom = an_x[k] + an_x[k + 1] + an_x[k + 2] + an_x[k + 3]
-        an_x[k] = n_denom / 4
+        n_denom = an_x[k] + an_x[k + 1] + an_x[k + 2] + an_x[k + 3] + an_x[k+4] + an_x[k + 5] + an_x[k + 6] + an_x[k + 7]
+        an_x[k] = n_denom / 8
 
-    plt.plot(an_x)
+    if plotFlag:
+        plt.plot(an_x)
 
-    # get different of smoothed IR signal  查分会去直流，周期信息仍然存在
+    # get different of smoothed IR signal  差分会去直流，周期信息仍然存在
     for k in range(n_ir_buffer_length - MA4_SIZE - 1):
         an_dx.append(an_x[k + 1] - an_x[k])
 
+    an_dx2 = []
+    for k in range(n_ir_buffer_length - MA4_SIZE - DIFF_SIZE):
+        an_dx2.append(an_x[k + DIFF_SIZE] - an_x[k])
+
+
+    # plt.figure()
+    # plt.plot(an_dx)
+    # plt.plot(an_dx2)
     # 2-pt Moving Average to an_dx
     for k in range(n_ir_buffer_length - MA4_SIZE - 2):
         an_dx[k] = (an_dx[k] + an_dx[k + 1]) / 2
 
-    plt.figure()
-    plt.plot(an_dx)
+
+    # 2-pt Moving Average to an_dx
+    for k in range(n_ir_buffer_length - MA4_SIZE - DIFF_SIZE - 1):
+        an_dx[k] = (an_dx2[k] + an_dx2[k + 1]) / 2
+
+    # plt.plot(an_dx)
+    # plt.plot(an_dx2)
     # hamming window
     # flip wave from so that we can detect valley with peak detector
     for i in range(n_ir_buffer_length - HAMMING_SIZE - MA4_SIZE - 2):
@@ -192,12 +220,21 @@ def maxim_heart_rate_and_oxygen_saturation(
 
         an_dx[i] = s / 1146   # divide by sum of auw_hamm
 
-    plt.plot(an_dx, color='black')
+    # plt.plot(an_dx, color='black')
 
     n_th1 = 0
-    for k in range(n_ir_buffer_length - HAMMING_SIZE):
-        n_th1 += an_dx[k] if an_dx[k] > 0 else 0 - an_dx[k]
-    n_th1 = n_th1 / (n_ir_buffer_length - HAMMING_SIZE)
+    count = 0
+    for k in range(n_ir_buffer_length - HAMMING_SIZE - MA4_SIZE):
+        if an_dx[k] > 0:   #只记大于0的值，为了提高阈值
+            n_th1 += an_dx[k]
+            count += 1
+    n_th1 = n_th1 / count
+        # n_th1 += an_dx[k] if an_dx[k] > 0 else 0 - an_dx[k]
+    # n_th1 = n_th1 / (n_ir_buffer_length - HAMMING_SIZE)
+
+
+
+    # print("n_th1: ", n_th1)
 
     n_npks = 0  # 峰值数目
     an_dx_peak_locs = [0] * 15  # 差值的峰值坐标
@@ -208,7 +245,7 @@ def maxim_heart_rate_and_oxygen_saturation(
         n_npks,
         an_dx,
         n_ir_buffer_length -
-        HAMMING_SIZE,
+        HAMMING_SIZE - MA4_SIZE,
         n_th1,
         8,
         5)  # 这个5是限定了500个点中脉搏上升一定小于5次，但不影响结果
@@ -219,11 +256,13 @@ def maxim_heart_rate_and_oxygen_saturation(
         for k in range(1, n_npks):
             n_peak_interval_sum += an_dx_peak_locs[k] - an_dx_peak_locs[k - 1]
         n_peak_interval_sum = n_peak_interval_sum / (n_npks - 1)
-        pn_heart_rate = 6000 / n_peak_interval_sum
-        pch_hr_valid = 1
+        # pn_heart_rate = 6000 / n_peak_interval_sum
+        pn_heart_rate.append(6000 / n_peak_interval_sum)
+        pch_hr_valid.append(1)
     else:  # 峰值少于两个，无效
-        pn_heart_rate = -999
-        pch_hr_valid = -1
+        # pn_heart_rate = -999
+        pn_heart_rate.append(-999)
+        pch_hr_valid.append(-1)
 
     an_ir_valley_locs = [0] * 15  # 根据差值的峰值坐标预估的一个波谷的坐标，以半个汉明窗宽往前推
     for k in range(n_npks):
@@ -255,19 +294,20 @@ def maxim_heart_rate_and_oxygen_saturation(
                     if un_only_once > 0:
                         un_only_once = 0
                     n_c_min = an_x[i]
-                    an_exact_ir_valley_locs[k] = i
+                    an_exact_ir_valley[k] = an_x[i]    #记录波谷大小
+                    an_exact_ir_valley_locs[k] = i     #记录波谷坐标
 
             if un_only_once == 0:
                 n_exact_ir_valley_locs_count += 1
 
     if n_exact_ir_valley_locs_count < 2:
-        pn_spo2 = -999  # do not use SPO2 since signal ratio is out of range
-        pch_spo2_valid = 0
+        pn_spo2.append(-999)  # do not use SPO2 since signal ratio is out of range
+        pch_spo2_valid.append(0)
         return
 
 
-    plt.figure()
-    plt.plot(an_x)
+    # plt.figure()
+    # plt.plot(an_x)
     # 4 pt MA
     for k in range(n_ir_buffer_length - MA4_SIZE):
         an_temp = (an_x[k] + an_x[k + 1] + an_x[k + 2] + an_x[k + 3])
@@ -275,7 +315,8 @@ def maxim_heart_rate_and_oxygen_saturation(
         an_temp = (an_y[k] + an_y[k + 1] + an_y[k + 2] + an_y[k + 3])
         an_y[k] = an_temp/4
 
-    plt.plot(an_x)
+    # plt.plot(an_x)
+    # plt.plot(x=an_exact_ir_valley_locs[0:5], y=an_exact_ir_valley[0:5])
 
     # using an_exact_ir_valley_locs , find ir-red DC andir-red AC for SPO2 calibration ratio
     # finding AC/DC maximum of raw ir * red between two valley locations
@@ -284,8 +325,8 @@ def maxim_heart_rate_and_oxygen_saturation(
     an_ratio = [0] * 15
     for k in range(n_exact_ir_valley_locs_count):
         if an_exact_ir_valley_locs[k] > n_ir_buffer_length:
-            pn_spo2 = -999  # do not use SPO2 since valley loc is out of range
-            pch_spo2_valid = 0
+            pn_spo2.append(-999)  # do not use SPO2 since valley loc is out of range
+            pch_spo2_valid.append(0)
             return
 
     # find max between two valley locations
@@ -304,6 +345,9 @@ def maxim_heart_rate_and_oxygen_saturation(
                 if an_x[i] > n_x_dc_max:
                     n_x_dc_max = an_x[i]
                     n_x_dc_max_idx = i
+                    an_exact_ir_peak_locs[k] = i
+                    an_exact_ir_peak[k] = an_x[i]
+
                 if an_y[i] > n_y_dc_max:
                     n_y_dc_max = an_y[i]
                     n_y_dc_max_idx = i
@@ -338,15 +382,15 @@ def maxim_heart_rate_and_oxygen_saturation(
 
     if n_ratio_average>2 and n_ratio_average<184:
         n_spo2_calc = uch_spo2_table[int(n_ratio_average)]
-        pn_spo2 = n_spo2_calc
-        pch_spo2_valid = 1
+        pn_spo2.append(n_spo2_calc)
+        pch_spo2_valid.append(1)
     else:
-        pn_spo2 = -999
-        pch_spo2_valid = 0
+        pn_spo2.append(-999)
+        pch_spo2_valid.append(0)
 
-
-    print(an_dx_peak_locs)
-    print(n_npks)
-    print(pn_heart_rate)
-    print(n_ratio_average)
-    print(pn_spo2)
+    if plotFlag:
+        print("an_dx_peak_locs:", an_dx_peak_locs)
+    # print("n_npks:", n_npks)
+    # print("心率:", pn_heart_rate)
+    # print("R值:", n_ratio_average)
+    # print("血氧:", pn_spo2)
